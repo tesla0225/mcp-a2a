@@ -1,0 +1,27 @@
+{
+  "name": "a2a-client-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server that acts as an A2A client",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "a2a-client-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "shx": "^0.3.4",
+    "typescript": "^5.6.2"
+  }
+}
