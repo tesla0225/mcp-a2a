@@ -32,6 +32,11 @@ Add this to your `claude_desktop_config.json`:
 
 ### NPX
 
+```bash
+npm run build
+npm link
+```
+
 ```json
 {
   "mcpServers": {
