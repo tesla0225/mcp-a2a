@@ -8,7 +8,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { A2AClient } from "./a2a-client.js";
+import { AgentManager } from "./agent-manager.js";
 
 // Create MCP server
 const server = new Server(
@@ -24,10 +24,8 @@ const server = new Server(
   },
 );
 
-// Get A2A endpoint URL from environment variable or default
-const a2aEndpoint = process.env.A2A_ENDPOINT_URL || "http://localhost:41241";
-// Create A2A client instance
-const a2aClient = new A2AClient(a2aEndpoint);
+// Create agent manager instance
+const agentManager = new AgentManager();
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -46,6 +44,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Optional task ID. If not provided, a new UUID will be generated",
           },
+          agentId: {
+            type: "string",
+            description: "Optional agent ID. If not provided, the first available agent will be used",
+          },
         },
         required: ["message"],
       },
@@ -60,8 +62,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "ID of the task to retrieve",
           },
+          agentId: {
+            type: "string",
+            description: "ID of the agent that handled the task",
+          },
         },
-        required: ["taskId"],
+        required: ["taskId", "agentId"],
       },
     },
     {
@@ -74,8 +80,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "ID of the task to cancel",
           },
+          agentId: {
+            type: "string",
+            description: "ID of the agent that is handling the task",
+          },
         },
-        required: ["taskId"],
+        required: ["taskId", "agentId"],
       },
     },
     {
@@ -92,6 +102,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Optional task ID. If not provided, a new UUID will be generated",
           },
+          agentId: {
+            type: "string",
+            description: "Optional agent ID. If not provided, the first available agent will be used",
+          },
           maxUpdates: {
             type: "number",
             description: "Maximum number of updates to receive (default: 10)",
@@ -102,10 +116,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "a2a_agent_info",
-      description: "Get information about the connected A2A agent",
+      description: "Get information about the connected A2A agents",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          agentId: {
+            type: "string",
+            description: "Optional agent ID. If not provided, information for all agents will be returned",
+          },
+        },
       },
     },
   ],
@@ -118,8 +137,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "a2a_send_task": {
-        const { message, taskId } = args as { message: string; taskId?: string };
-        const result = await a2aClient.sendTask({
+        const { message, taskId, agentId } = args as { message: string; taskId?: string; agentId?: string };
+        const client = agentId ? agentManager.getClientById(agentId) : agentManager.getAllClients().values().next().value;
+        
+        if (!client) {
+          throw new Error(`No available agent${agentId ? ` with ID ${agentId}` : ''}`);
+        }
+
+        const result = await client.sendTask({
           id: taskId || crypto.randomUUID(),
           message: {
             role: "user",
@@ -137,8 +162,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "a2a_get_task": {
-        const { taskId } = args as { taskId: string };
-        const result = await a2aClient.getTask({ id: taskId });
+        const { taskId, agentId } = args as { taskId: string; agentId: string };
+        const client = agentManager.getClientById(agentId);
+        
+        if (!client) {
+          throw new Error(`No agent found with ID ${agentId}`);
+        }
+
+        const result = await client.getTask({ id: taskId });
         return {
           content: [
             {
@@ -150,8 +181,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "a2a_cancel_task": {
-        const { taskId } = args as { taskId: string };
-        const result = await a2aClient.cancelTask({ id: taskId });
+        const { taskId, agentId } = args as { taskId: string; agentId: string };
+        const client = agentManager.getClientById(agentId);
+        
+        if (!client) {
+          throw new Error(`No agent found with ID ${agentId}`);
+        }
+
+        const result = await client.cancelTask({ id: taskId });
         return {
           content: [
             {
@@ -163,14 +200,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "a2a_send_task_subscribe": {
-        const { message, taskId, maxUpdates = 10 } = args as {
+        const { message, taskId, agentId, maxUpdates = 10 } = args as {
           message: string;
           taskId?: string;
+          agentId?: string;
           maxUpdates?: number;
         };
         
+        const client = agentId ? agentManager.getClientById(agentId) : agentManager.getAllClients().values().next().value;
+        
+        if (!client) {
+          throw new Error(`No available agent${agentId ? ` with ID ${agentId}` : ''}`);
+        }
+
         const id = taskId || crypto.randomUUID();
-        const stream = a2aClient.sendTaskSubscribe({
+        const stream = client.sendTaskSubscribe({
           id,
           message: {
             role: "user",
@@ -186,7 +230,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           count++;
           if (count >= maxUpdates) break;
           
-          // Break early if this is the final update
           if (event.final) break;
         }
 
@@ -201,8 +244,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "a2a_agent_info": {
-        try {
-          const card = await a2aClient.agentCard();
+        const { agentId } = args as { agentId?: string };
+        
+        if (agentId) {
+          const client = agentManager.getClientById(agentId);
+          if (!client) {
+            throw new Error(`No agent found with ID ${agentId}`);
+          }
+          const card = await client.agentCard();
           return {
             content: [
               {
@@ -211,12 +260,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               },
             ],
           };
-        } catch (error) {
+        } else {
+          const results = [];
+          for (const [id, client] of agentManager.getAllClients()) {
+            try {
+              const card = await client.agentCard();
+              results.push({ agentId: id, card });
+            } catch (error) {
+              results.push({ agentId: id, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
           return {
             content: [
               {
                 type: "text",
-                text: `Error retrieving agent card: ${error instanceof Error ? error.message : String(error)}`,
+                text: JSON.stringify(results, null, 2),
               },
             ],
           };
@@ -236,13 +294,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // List available resources
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  const endpoints = agentManager.getEndpoints();
   return {
     resources: [
-      {
-        uri: "a2a://agent-card",
+      ...endpoints.map(endpoint => ({
+        uri: `a2a://agent-card/${endpoint.id}`,
         mimeType: "application/json",
-        name: "A2A Agent Card Information",
-      },
+        name: `A2A Agent Card Information (${endpoint.id})`,
+      })),
       {
         uri: "a2a://tasks",
         mimeType: "application/json",
@@ -256,9 +315,16 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const { uri } = request.params;
 
-  if (uri === "a2a://agent-card") {
+  if (uri.startsWith("a2a://agent-card/")) {
+    const agentId = uri.split("/")[2];
+    const client = agentManager.getClientById(agentId);
+    
+    if (!client) {
+      throw new Error(`No agent found with ID ${agentId}`);
+    }
+
     try {
-      const card = await a2aClient.agentCard();
+      const card = await client.agentCard();
       return {
         contents: [
           {
@@ -272,8 +338,6 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       throw new Error(`Failed to read agent card: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else if (uri === "a2a://tasks") {
-    // This would normally return recently cached tasks
-    // For simplicity, we're just returning an empty array
     return {
       contents: [
         {
@@ -289,16 +353,10 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  console.error(`Starting A2A Client MCP Server, connecting to A2A endpoint: ${a2aEndpoint}`);
+  console.error("Starting A2A Client MCP Server");
   
-  // Test connection to A2A endpoint
-  try {
-    const card = await a2aClient.agentCard();
-    console.error(`Successfully connected to A2A endpoint: ${card.name} (${card.version})`);
-  } catch (error) {
-    console.error(`Warning: Failed to connect to A2A endpoint: ${error instanceof Error ? error.message : String(error)}`);
-    console.error("The server will start anyway, but A2A functionality may not work.");
-  }
+  // Initialize agent manager
+  await agentManager.initialize();
   
   const transport = new StdioServerTransport();
   await server.connect(transport);
